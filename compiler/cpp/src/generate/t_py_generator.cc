@@ -61,6 +61,12 @@ class t_py_generator : public t_generator {
     iter = parsed_options.find("slots");
     gen_slots_ = (iter != parsed_options.end());
 
+    iter = parsed_options.find("request_logging");
+    request_log_ = (iter != parsed_options.end());
+
+    iter = parsed_options.find("oboe_tracing");
+    oboe_trace_ = (iter != parsed_options.end());
+
     iter = parsed_options.find("dynamic");
     gen_dynamic_ = (iter != parsed_options.end());
 
@@ -309,6 +315,9 @@ class t_py_generator : public t_generator {
    */
   bool gen_utf8strings_;
 
+  bool oboe_trace_;
+  bool request_log_;
+
   /**
    * File streams
    */
@@ -381,6 +390,11 @@ void t_py_generator::init_generator() {
     render_includes() << endl <<
     render_fastbinary_includes() <<
     endl << endl;
+
+  if (oboe_trace_) {
+    f_types_ <<
+      "import oboe" << endl;
+  }
 
   f_consts_ <<
     py_autogen_comment() << endl <<
@@ -902,6 +916,16 @@ void t_py_generator::generate_py_struct_reader(ofstream& out,
 
     // Switch statement on the field we are reading
     bool first = true;
+    if (oboe_trace_) {
+      first = false;
+
+      indent(out) << "if fid == 999 and ftype == TType.STRING:" << endl;
+      indent_up();
+      indent(out) << "xtrace = iprot.readString()" << endl;
+      indent(out) << "c = oboe.Context(xtrace)" << endl;
+      indent(out) << "c.set_as_default()" << endl;
+      indent_down();
+    } 
 
     // Generate deserialization code for known cases
     for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
@@ -989,6 +1013,29 @@ void t_py_generator::generate_py_struct_writer(ofstream& out,
     indent_down();
   }
 
+  if (oboe_trace_) {
+    t_base_type t_string("String", t_base_type::TYPE_STRING);
+    t_field xtrace_field(&t_string, "xtrace", 999);
+
+    indent(out) << "if oboe.Context.get_default().is_valid():" << endl;
+    indent_up();
+    indent(out) << "xtrace = str(oboe.Context.get_default())" << endl;
+    indent(out) <<
+      "oprot.writeFieldBegin(" <<
+      "'" << xtrace_field.get_name() << "', " <<
+      type_to_enum(xtrace_field.get_type()) << ", " <<
+      xtrace_field.get_key() << ")" << endl;
+
+    generate_serialize_field(out, &xtrace_field, "");
+
+    // Write field closer
+    indent(out) <<
+      "oprot.writeFieldEnd()" << endl;
+
+    indent_down();
+  }
+
+
   // Write the struct map
   out <<
     indent() << "oprot.writeFieldStop()" << endl <<
@@ -1049,6 +1096,17 @@ void t_py_generator::generate_service(t_service* tservice) {
     "from ttypes import *" << endl <<
     "from thrift.Thrift import TProcessor" << endl <<
     render_fastbinary_includes() << endl;
+
+  if (oboe_trace_) {
+    f_service_ <<
+      "import oboe" << endl;
+  }
+
+  if (request_log_) {
+    f_service_ <<
+      "import logging" << endl <<
+      "logger = logging.getLogger('thrift.request')" << endl;
+  }
 
   if (gen_twisted_) {
     f_service_ <<
@@ -1290,6 +1348,14 @@ void t_py_generator::generate_service_client(t_service* tservice) {
       }
     }
 
+    if (oboe_trace_) {
+      indent(f_service_) << "oboe.log('entry','"
+                         << tservice->get_name() << ":client:" << (*f_iter)->get_name() << "', store_backtrace=True)" << endl;
+      indent(f_service_) << "try:" << endl;
+
+      indent_up();
+    }
+
     indent(f_service_) <<
       "self.send_" << funname << "(";
 
@@ -1314,18 +1380,36 @@ void t_py_generator::generate_service_client(t_service* tservice) {
 
     f_service_ << ")" << endl;
 
+    bool ret_line = false;
     if (!(*f_iter)->is_oneway()) {
-      f_service_ << indent();
-      if (gen_twisted_) {
-        f_service_ << "return d" << endl;
-      } else if (gen_tornado_) {
-        f_service_ << "self.recv_dispatch()" << endl;
-      } else {
-        if (!(*f_iter)->get_returntype()->is_void()) {
-          f_service_ << "return ";
+      if (oboe_trace_) {
+        f_service_ << indent();
+        if (gen_twisted_) {
+          f_service_ << "res = d" << endl;
+          ret_line = true;
+        } else if (gen_tornado_) {
+          f_service_ << "self.recv_dispatch()" << endl;
+        } else {
+          if (!(*f_iter)->get_returntype()->is_void()) {
+            f_service_ << "res = ";
+            ret_line = true;
+          }
+          f_service_ <<
+            "self.recv_" << funname << "()" << endl;
         }
-        f_service_ <<
-          "self.recv_" << funname << "()" << endl;
+      } else {
+        f_service_ << indent();
+        if (gen_twisted_) {
+          f_service_ << "return d" << endl;
+        } else if (gen_tornado_) {
+          f_service_ << "self.recv_dispatch()" << endl;
+        } else {
+          if (!(*f_iter)->get_returntype()->is_void()) {
+            f_service_ << "return = ";
+          }
+          f_service_ <<
+            "self.recv_" << funname << "()" << endl;
+        }
       }
     } else {
       if (gen_twisted_) {
@@ -1334,6 +1418,24 @@ void t_py_generator::generate_service_client(t_service* tservice) {
       }
     }
     indent_down();
+
+    if (oboe_trace_) {
+      indent(f_service_) << "except Exception, e:" << endl;
+      indent_up();
+      indent(f_service_) << "oboe.log_error(e.__class__.__name__, str(e), store_backtrace=True)" << endl;
+      indent(f_service_) << "raise" << endl;
+      indent_down();
+      indent(f_service_) << "finally:" << endl;
+      indent_up();
+      indent(f_service_) << "oboe.log('exit','"
+                         << tservice->get_name() << ":client:" << (*f_iter)->get_name() << "')" << endl;
+      indent_down();
+      if (ret_line) {
+          indent(f_service_) << "return res" << endl;
+      }
+      indent_down();
+    }
+
     f_service_ << endl;
 
     indent(f_service_) <<
@@ -1873,6 +1975,19 @@ void t_py_generator::generate_process_function(t_service* tservice,
     indent() << "args.read(iprot)" << endl <<
     indent() << "iprot.readMessageEnd()" << endl;
 
+  if (oboe_trace_) {
+    f_service_ <<
+      indent() << "oboe.log('entry','"
+               << tservice->get_name() << ":server:" << tfunction->get_name() << "', "
+               << "keys={'args_repr': args.__repr__()}, store_backtrace=True)" << endl;
+  }
+
+  if (request_log_) {
+    f_service_ <<
+      indent() << "logger.info('Received request for "
+               << tservice->get_name() << ":" << tfunction->get_name() << "')" << endl;
+  }
+
   t_struct* xs = tfunction->get_xceptions();
   const std::vector<t_field*>& xceptions = xs->get_members();
   vector<t_field*>::const_iterator x_iter;
@@ -2106,6 +2221,12 @@ void t_py_generator::generate_process_function(t_service* tservice,
       indent_down();
       f_service_ << endl;
       return;
+    }
+
+    if (oboe_trace_) {
+      f_service_ <<
+        indent() << "oboe.log('exit','"
+                 << tservice->get_name() << ":server:" << tfunction->get_name() << "')" << endl;
     }
 
     f_service_ <<
@@ -2765,6 +2886,8 @@ string t_py_generator::type_to_spec_args(t_type* ttype) {
 
 
 THRIFT_REGISTER_GENERATOR(py, "Python",
+"    request_logging: (MMF customization) Add INFO-level logging of service method requests.\n" \
+"    oboe_tracing:    (MMF customization) Add Tracelytics wrapping to method calls (client and server).\n" \
 "    new_style:       Generate new-style classes.\n" \
 "    twisted:         Generate Twisted-friendly RPC services.\n" \
 "    tornado:         Generate code for use with Tornado.\n" \
