@@ -19,9 +19,7 @@
 
 package thrift
 
-import (
-	"log"
-)
+import "log"
 
 // Simple, non-concurrent server for testing.
 type TSimpleServer struct {
@@ -111,26 +109,42 @@ func (p *TSimpleServer) OutputProtocolFactory() TProtocolFactory {
 	return p.outputProtocolFactory
 }
 
-func (p *TSimpleServer) Serve() error {
+func (p *TSimpleServer) Serve1(ch chan<- error) error {
 	p.stopped = false
 	err := p.serverTransport.Listen()
+
 	if err != nil {
 		return err
 	}
+
 	for !p.stopped {
 		client, err := p.serverTransport.Accept()
+
 		if err != nil {
 			log.Println("Accept err: ", err)
+
+			if ch != nil {
+				ch <- err
+			}
 		}
+
 		if client != nil {
 			go func() {
 				if err := p.processRequest(client); err != nil {
 					log.Println("error processing request:", err)
+
+					if ch != nil {
+						ch <- err
+					}
 				}
 			}()
 		}
 	}
 	return nil
+}
+
+func (p *TSimpleServer) Serve() error {
+	return p.Serve1(nil)
 }
 
 func (p *TSimpleServer) Stop() error {
@@ -153,7 +167,7 @@ func (p *TSimpleServer) processRequest(client TTransport) error {
 	}
 	for {
 		ok, err := processor.Process(inputProtocol, outputProtocol)
-		if err, ok := err.(TTransportException); ok && err.TypeId() == END_OF_FILE{
+		if err, ok := err.(TTransportException); ok && err.TypeId() == END_OF_FILE {
 			return nil
 		} else if err != nil {
 			return err
