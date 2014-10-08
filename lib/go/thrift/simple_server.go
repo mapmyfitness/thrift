@@ -19,7 +19,10 @@
 
 package thrift
 
-import "log"
+import (
+	"log"
+	"sync"
+)
 
 // Simple, non-concurrent server for testing.
 type TSimpleServer struct {
@@ -109,30 +112,28 @@ func (p *TSimpleServer) OutputProtocolFactory() TProtocolFactory {
 	return p.outputProtocolFactory
 }
 
-func (p *TSimpleServer) Serve1(ch chan<- error) error {
+func (p *TSimpleServer) Serve2(ch chan<- error, wg *sync.WaitGroup) error {
 	p.stopped = false
 	err := p.serverTransport.Listen()
-
 	if err != nil {
 		return err
 	}
-
 	for !p.stopped {
 		client, err := p.serverTransport.Accept()
-
-		if err != nil {
+		if !p.stopped && err != nil {
 			log.Println("Accept err: ", err)
-
 			if ch != nil {
 				ch <- err
 			}
 		}
-
 		if client != nil {
+			if wg != nil {
+				wg.Add(1)
+			}
 			go func() {
+				defer wg.Done()
 				if err := p.processRequest(client); err != nil {
 					log.Println("error processing request:", err)
-
 					if ch != nil {
 						ch <- err
 					}
@@ -143,6 +144,10 @@ func (p *TSimpleServer) Serve1(ch chan<- error) error {
 	return nil
 }
 
+func (p *TSimpleServer) Serve1(ch chan<- error) error {
+	return p.Serve2(ch, nil)
+}
+
 func (p *TSimpleServer) Serve() error {
 	return p.Serve1(nil)
 }
@@ -150,6 +155,7 @@ func (p *TSimpleServer) Serve() error {
 func (p *TSimpleServer) Stop() error {
 	p.stopped = true
 	p.serverTransport.Interrupt()
+	p.serverTransport.Close()
 	return nil
 }
 
