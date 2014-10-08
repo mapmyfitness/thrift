@@ -31,8 +31,20 @@ type TServerSocket struct {
 	interrupted   bool
 }
 
+func NewTServerSocket2(listenAddr string, lis net.Listener) (*TServerSocket, error) {
+	return NewTServerSocketTimeout3(listenAddr, 0, lis)
+}
+
 func NewTServerSocket(listenAddr string) (*TServerSocket, error) {
 	return NewTServerSocketTimeout(listenAddr, 0)
+}
+
+func NewTServerSocketTimeout3(listenAddr string, clientTimeout time.Duration, lis net.Listener) (*TServerSocket, error) {
+	addr, err := net.ResolveTCPAddr("tcp", listenAddr)
+	if err != nil {
+		return nil, err
+	}
+	return &TServerSocket{listener: lis, addr: addr, clientTimeout: clientTimeout}, nil
 }
 
 func NewTServerSocketTimeout(listenAddr string, clientTimeout time.Duration) (*TServerSocket, error) {
